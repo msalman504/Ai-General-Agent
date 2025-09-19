@@ -1,0 +1,5 @@
+{
+  "name": "Ai General Agent: AgentGPT Alternative",
+  "description": "An AI agent that autonomously plans, executes, and adapts to tasks to achieve a user-defined goal, powered by the Gemini API. This application replicates the core functionality of AgentGPT.",
+  "requestFramePermissions": []
+}
