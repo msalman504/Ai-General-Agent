@@ -6,7 +6,6 @@ import { BrowserView } from './components/BrowserView';
 import { Task, Log } from './types';
 import * as geminiService from './services/geminiService';
 import { AgentAction } from './services/geminiService';
-import * as browserService from './services/browserAutomationService';
 
 const App: React.FC = () => {
     const [isDeployed, setIsDeployed] = useState<boolean>(false);
@@ -17,10 +16,12 @@ const App: React.FC = () => {
     const [logs, setLogs] = useState<Log[]>([]);
     const [currentTaskId, setCurrentTaskId] = useState<number | null>(null);
     const [isRunning, setIsRunning] = useState<boolean>(false);
+    
+    const [actionHistory, setActionHistory] = useState<{ action: AgentAction; output: string }[]>([]);
 
-    // Browser state
-    const [browserUrl, setBrowserUrl] = useState<string>('');
-    const [browserContent, setBrowserContent] = useState<string>('');
+    // Workspace state
+    const [workspaceTitle, setWorkspaceTitle] = useState<string>('');
+    const [workspaceContent, setWorkspaceContent] = useState<string>('');
 
     const addLog = useCallback((message: string, type: Log['type'], taskId?: number) => {
         setLogs(prev => [...prev, {
@@ -57,96 +58,92 @@ const App: React.FC = () => {
         }
     };
     
-    // The main agent loop
+    // The main agent loop - now state-driven instead of a 'for' loop
     useEffect(() => {
         if (!isRunning || !currentTaskId) {
             return;
         }
 
         let isCancelled = false;
-        const previousActionResults: { action: AgentAction; output: string }[] = [];
 
-        const executeTask = async (taskId: number) => {
+        const executeAction = async () => {
             if (isCancelled) return;
 
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'in-progress' } : t));
-            addLog(`Starting task ${taskId}: ${tasks.find(t => t.id === taskId)?.text}`, 'system', taskId);
-
-            const maxLoops = 10; // Safeguard against infinite loops
-            for (let i = 0; i < maxLoops; i++) {
-                 if (isCancelled) return;
-                
-                try {
-                    const currentTask = tasks.find(t => t.id === taskId);
-                    if (!currentTask) {
-                        throw new Error(`Task with ID ${taskId} not found.`);
-                    }
-
-                    const nextAction = await geminiService.determineNextAction(agentGoal, tasks, currentTask, previousActionResults);
-                    addLog(nextAction.thought, 'thought', taskId);
-                    
-                    let output = '';
-                    const tool = nextAction.action.tool;
-                    const params = nextAction.action.parameters;
-                    addLog(`Action: ${tool}(${JSON.stringify(params || {})})`, 'action', taskId);
-
-                    switch (tool) {
-                        case 'google_search':
-                            if (!params.query) throw new Error("Search query is required for google_search.");
-                            const searchResult = await geminiService.searchGoogle(params.query);
-                            output = `Search returned ${searchResult.links.length} links. Summary: ${searchResult.summary}`;
-                            setBrowserContent(`Search Results for "${params.query}":\n\nSummary:\n${searchResult.summary}\n\nLinks:\n${searchResult.links.map(l=>`- ${l.title}: ${l.uri}`).join('\n')}`);
-                            setBrowserUrl(`google://search?q=${encodeURIComponent(params.query)}`);
-                            break;
-                        case 'browse':
-                            if (!params.url) throw new Error("URL is required for browse.");
-                            output = await browserService.browse(params.url);
-                            setBrowserContent(output);
-                            setBrowserUrl(params.url);
-                            break;
-                        case 'finish':
-                            addLog(`Agent finished goal: ${params.reason}`, 'success', taskId);
-                            setTasks(prev => prev.map(t => ({ ...t, status: t.status === 'pending' || t.status === 'in-progress' ? 'completed' : t.status })));
-                            setCurrentTaskId(null);
-                            setIsRunning(false);
-                            return; // Exit loop and task execution
-                        case 'fail':
-                             addLog(`Agent failed task: ${params.reason}`, 'error', taskId);
-                             setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed' } : t));
-                             setCurrentTaskId(null);
-                             setIsRunning(false);
-                             return; // Exit loop and task execution
-                        default:
-                            output = `Unknown tool: ${tool}`;
-                            addLog(output, 'error', taskId);
-                    }
-                    
-                    previousActionResults.push({ action: nextAction, output });
-
-                } catch (error) {
-                    const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
-                    addLog(errorMessage, 'error', taskId);
-                    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'failed' } : t));
-                    setIsRunning(false);
-                    return; // Stop execution on error
-                }
+            const currentTask = tasks.find(t => t.id === currentTaskId);
+            if (!currentTask) {
+                addLog(`Could not find task with ID ${currentTaskId}.`, 'error');
+                setIsRunning(false);
+                return;
             }
-            // If loop finishes, it means we hit the max loops safeguard
-            addLog(`Max loops reached for task ${taskId}. Completing task to avoid getting stuck.`, 'system', taskId);
-            setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: 'completed' } : t));
+            
+            // Mark task as in-progress on first action
+            if (currentTask.status === 'pending') {
+                 setTasks(prev => prev.map(t => t.id === currentTaskId ? { ...t, status: 'in-progress' } : t));
+                 addLog(`Starting task ${currentTaskId}: ${currentTask.text}`, 'system', currentTaskId);
+            }
+
+            try {
+                const nextAction = await geminiService.determineNextAction(agentGoal, tasks, currentTask, actionHistory);
+                addLog(nextAction.thought, 'thought', currentTaskId);
+                
+                let output = '';
+                const tool = nextAction.action.tool;
+                const params = nextAction.action.parameters;
+                addLog(`Action: ${tool}(${JSON.stringify(params || {})})`, 'action', currentTaskId);
+
+                switch (tool) {
+                    case 'google_search':
+                        if (!params.query) throw new Error("Search query is required for google_search.");
+                        const searchResult = await geminiService.searchGoogle(params.query);
+                        const resultContent = `Search Results for "${params.query}":\n\nSummary:\n${searchResult.summary}\n\nLinks:\n${searchResult.links.map(l=>`- ${l.title}: ${l.uri}`).join('\n')}`;
+                        output = `Search returned ${searchResult.links.length} links. Summary: ${searchResult.summary}`;
+                        setWorkspaceContent(resultContent);
+                        setWorkspaceTitle(`Search: "${params.query}"`);
+                        setActionHistory(prev => [...prev, { action: nextAction, output }]);
+                        break;
+                    case 'complete_task':
+                        addLog(`Task completed: ${params.reason}`, 'success', currentTaskId);
+                        setTasks(prev => prev.map(t => t.id === currentTaskId ? { ...t, status: 'completed' } : t));
+                        // The useEffect for task changes will handle moving to the next task
+                        break;
+                    case 'finish':
+                        addLog(`Agent finished goal: ${params.reason}`, 'success', currentTaskId);
+                        setTasks(prev => prev.map(t => ({ ...t, status: t.status === 'pending' || t.status === 'in-progress' ? 'completed' : t.status })));
+                        setCurrentTaskId(null);
+                        setIsRunning(false);
+                        return;
+                    case 'fail':
+                         addLog(`Agent failed task: ${params.reason}`, 'error', currentTaskId);
+                         setTasks(prev => prev.map(t => t.id === currentTaskId ? { ...t, status: 'failed' } : t));
+                         setCurrentTaskId(null);
+                         setIsRunning(false);
+                         return;
+                    default:
+                        output = `Unknown tool: ${tool}`;
+                        addLog(output, 'error', currentTaskId);
+                        // Update history even for unknown tools to give agent context
+                        setActionHistory(prev => [...prev, { action: nextAction, output }]);
+                }
+            } catch (error) {
+                const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
+                addLog(errorMessage, 'error', currentTaskId);
+                setTasks(prev => prev.map(t => t.id === currentTaskId ? { ...t, status: 'failed' } : t));
+                setIsRunning(false);
+            }
         };
 
-        executeTask(currentTaskId);
+        executeAction();
 
         return () => {
             isCancelled = true;
         };
-    }, [isRunning, currentTaskId, agentGoal, tasks, addLog]);
+    }, [isRunning, currentTaskId, agentGoal, tasks, actionHistory, addLog]);
 
     // Effect to move to the next task
     useEffect(() => {
         const currentTask = tasks.find(t => t.id === currentTaskId);
         if (currentTask && (currentTask.status === 'completed' || currentTask.status === 'failed')) {
+            setActionHistory([]); // Clear history for the new task
             const nextTask = tasks.find(t => t.status === 'pending');
             if (nextTask) {
                 setCurrentTaskId(nextTask.id);
@@ -178,7 +175,7 @@ const App: React.FC = () => {
                     </div>
                     <div className="lg:col-span-2 flex flex-col gap-6">
                         <div className="flex-1 min-h-0">
-                            <BrowserView url={browserUrl} content={browserContent} />
+                            <BrowserView title={workspaceTitle} content={workspaceContent} />
                         </div>
                         <div className="flex-1 min-h-0">
                             <LogFeed logs={logs} />

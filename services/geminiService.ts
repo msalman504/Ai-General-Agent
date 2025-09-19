@@ -73,14 +73,13 @@ const nextActionSchema = {
             properties: {
                 tool: {
                     type: Type.STRING,
-                    description: "The tool to use. Must be one of: 'google_search', 'browse', 'finish', 'fail'."
+                    description: "The tool to use. Must be one of: 'google_search', 'complete_task', 'finish', 'fail'."
                 },
                 parameters: {
                     type: Type.OBJECT,
                     properties: {
                         query: { type: Type.STRING, description: "The search query for google_search." },
-                        url: { type: Type.STRING, description: "The URL to browse." },
-                        reason: { type: Type.STRING, description: "The reason for finishing the goal or failing the task."}
+                        reason: { type: Type.STRING, description: "The reason for completing the task, finishing the goal, or failing."}
                     },
                 }
             },
@@ -93,10 +92,9 @@ const nextActionSchema = {
 export interface AgentAction {
     thought: string;
     action: {
-        tool: 'google_search' | 'browse' | 'finish' | 'fail';
+        tool: 'google_search' | 'complete_task' | 'finish' | 'fail';
         parameters: {
             query?: string;
-            url?: string;
             reason?: string;
         };
     };
@@ -111,15 +109,15 @@ export const determineNextAction = async (
 
     const systemInstruction = `You are an autonomous AI agent. Your goal is to complete the tasks assigned to you.
 You have access to the following tools:
-1.  **google_search**: Searches Google for a query. Use this to find relevant websites.
-2.  **browse**: "Opens" a webpage and returns its text content. Use this to read information from a URL.
-3.  **finish**: Completes the overall goal with a final answer. Use this only when all tasks are done and you have a complete answer.
+1.  **google_search**: Searches Google for a query. Use this to find information. You can perform multiple searches to gather enough information. Refine your search queries based on previous results.
+2.  **complete_task**: Use this when you have successfully completed the current task and are ready to move to the next one. Provide a summary of what you accomplished.
+3.  **finish**: Use this only when all tasks are done and you have a complete, final answer for the user's overall goal.
 4.  **fail**: Declares that you are unable to complete the current task or the overall goal. Provide a reason.
 
 **Process:**
 1.  **Observe**: Review the overall goal, the full task list, the current task, and the results of your previous actions.
 2.  **Think**: Formulate a plan to address the current task. Your thought process should be clear and logical.
-3.  **Act**: Choose one tool to execute your plan. Provide the necessary parameters.
+3.  **Act**: Choose one tool to execute your plan. If you have gathered enough information to complete the current task, use 'complete_task'.
 
 Return your response as a single JSON object matching the provided schema.`;
 
